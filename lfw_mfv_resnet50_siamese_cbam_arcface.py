@@ -5,7 +5,7 @@ from tensorflow.keras.layers import Activation, BatchNormalization, add, GlobalM
 from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 import matplotlib.pyplot as plt
-import CBAM_module as CBAM
+from backbones import CBAM_module as CBAM
 # from tensorflow.keras.optimizers.legacy import Adam
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import numpy as np
