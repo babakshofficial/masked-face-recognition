@@ -9,19 +9,21 @@ import os
 from PIL import Image
 from tqdm import tqdm
 
+# Disable interactive logging to reduce verbose output
 tf.keras.utils.disable_interactive_logging()
 
-# Configuration
-IMG_SIZE = (224, 224)
-BATCH_SIZE = 32
-EPOCHS = 1
-LR = 0.0001
-h5_path = 'vggface2_Keras/model/resnet50_softmax_dim512/weights.h5'
-ratio = 16
-kernel_size = 7
-normalization_unit = 255.0
+# Configuration constants for image processing and model parameters
+IMG_SIZE = (224, 224)  # Standard input size for most deep learning models
+BATCH_SIZE = 32  # Number of images processed in one batch
+EPOCHS = 1  # Training epochs (if applicable)
+LR = 0.0001  # Learning rate
+h5_path = 'vggface2_Keras/model/resnet50_softmax_dim512/weights.h5'  # Pre-trained model weights path
+ratio = 16  # Reduction ratio for channel attention
+kernel_size = 7  # Kernel size for spatial attention
+normalization_unit = 255.0  # Normalization factor for pixel values
 
 
+# Custom Channel Attention layer implementation
 class ChannelAttention(layers.Layer):
     def __init__(self, ratio=16, **kwargs):
         super(ChannelAttention, self).__init__(**kwargs)
@@ -30,6 +32,7 @@ class ChannelAttention(layers.Layer):
         self.ratio = ratio
 
     def build(self, input_shape):
+        # Create dense layers for channel-wise attention mechanism
         channel = input_shape[-1]
         self.shared_layer_one = layers.Dense(channel // self.ratio,
                                              activation='relu',
@@ -42,6 +45,7 @@ class ChannelAttention(layers.Layer):
                                              bias_initializer='zeros')
 
     def call(self, inputs):
+        # Compute average pooling and max pooling
         avg_pool = tf.reduce_mean(inputs, axis=[1, 2], keepdims=True)
         avg_pool = self.shared_layer_one(avg_pool)
         avg_pool = self.shared_layer_two(avg_pool)
@@ -50,16 +54,19 @@ class ChannelAttention(layers.Layer):
         max_pool = self.shared_layer_one(max_pool)
         max_pool = self.shared_layer_two(max_pool)
 
+        # Combine attention weights and apply sigmoid activation
         attention = tf.sigmoid(avg_pool + max_pool)
         return attention
 
 
+# Enhanced Spatial Attention layer with face mask integration
 class EnhancedSpatialAttention(layers.Layer):
     def __init__(self, kernel_size=7, **kwargs):
         super(EnhancedSpatialAttention, self).__init__(**kwargs)
         self.kernel_size = kernel_size
 
     def build(self, input_shape):
+        # Convolutional layer for spatial attention
         self.conv = layers.Conv2D(filters=1,
                                   kernel_size=self.kernel_size,
                                   padding='same',
@@ -67,9 +74,12 @@ class EnhancedSpatialAttention(layers.Layer):
                                   use_bias=False)
 
     def call(self, inputs, face_mask):
+        # Compute average and max pooling across channel dimension
         avg_pool = tf.reduce_mean(inputs, axis=3, keepdims=True)
         max_pool = tf.reduce_max(inputs, axis=3, keepdims=True)
         concat = tf.concat([avg_pool, max_pool], axis=3)
+
+        # Generate spatial attention map
         attention = tf.sigmoid(self.conv(concat))
 
         # Enhance attention using face mask
@@ -77,23 +87,28 @@ class EnhancedSpatialAttention(layers.Layer):
         return enhanced_attention
 
 
+# Load pre-trained base model
 base_model = load_model(h5_path)
 face_mask_input = layers.Input(shape=(7, 7, 1))
 conv_output = base_model.layers[170].output
 
+# Apply CBAM (Convolutional Block Attention Module) mechanisms
 channel_attention = ChannelAttention(ratio)(conv_output)
 x = layers.Multiply()([conv_output, channel_attention])
 spatial_attention = EnhancedSpatialAttention(kernel_size)(x, face_mask_input)
 x = layers.Multiply()([x, spatial_attention])
 
+# Final classification layers
 x = layers.GlobalAveragePooling2D()(x)
 x = layers.Dense(32, activation='softmax')(x)
 
+# Create models for prediction and feature extraction
 model = models.Model(inputs=[base_model.input, face_mask_input], outputs=x)
 cbam_layer_model = models.Model(inputs=model.input, outputs=model.layers[174].output)
 print(f"Loaded model from {h5_path}")
 
 
+# Function to create face mask using MTCNN for face detection
 def create_face_filter(image, size=IMG_SIZE):
     detector = MTCNN()
     image_array = np.array(image)
@@ -103,6 +118,7 @@ def create_face_filter(image, size=IMG_SIZE):
 
     if result:
         for person in result:
+            # Extract face bounding box and key points
             bounding_box = person['box']
             keypoints = person['keypoints']
 
@@ -113,7 +129,7 @@ def create_face_filter(image, size=IMG_SIZE):
             # Enhance attention on eyes
             left_eye = keypoints['left_eye']
             right_eye = keypoints['right_eye']
-            eye_radius = int(width * 0.1)  # Adjust as needed
+            eye_radius = int(width * 0.1)
             cv2.circle(mask, tuple(left_eye), eye_radius, 2, -1)
             cv2.circle(mask, tuple(right_eye), eye_radius, 2, -1)
 
@@ -122,6 +138,7 @@ def create_face_filter(image, size=IMG_SIZE):
     return mask_downsampled
 
 
+# Main function to apply enhanced CBAM to an image
 def apply_enhanced_cbam_to_image(image):
     # Preprocess the image
     original_image = image.copy()
@@ -136,22 +153,16 @@ def apply_enhanced_cbam_to_image(image):
     input_tensor = tf.expand_dims(input_array, 0)
 
     # Create and convert face mask
-    face_mask = create_face_filter(image_tensor)  # Ensure this returns the correct shape
+    face_mask = create_face_filter(image_tensor)
     face_mask = tf.convert_to_tensor(face_mask, dtype=tf.float32)
-
-    # Resize the face mask to the expected shape of (7, 7, 1)
     face_mask_resized = tf.image.resize(face_mask, (7, 7))
+    face_mask_resized = tf.expand_dims(face_mask_resized, axis=-1)
 
-    # Expand dimensions to fit the model's expected input shape
-    face_mask_resized = tf.expand_dims(face_mask_resized, axis=-1)  # Shape becomes (1, 7, 7, 1)
-
-    # Call the model directly with both inputs
+    # Call the model to get CBAM output
     cbam_output = cbam_layer_model([input_tensor, face_mask_resized])
 
-    # Get the attention map
+    # Process attention map
     attention_map = tf.reduce_mean(cbam_output, axis=-1).numpy().squeeze()
-
-    # Handle potential NaN or inf values
     attention_map = np.nan_to_num(attention_map)
 
     # Normalize attention map
@@ -173,8 +184,9 @@ def apply_enhanced_cbam_to_image(image):
     return result_image
 
 
+# Function to walk through dataset and apply CBAM preprocessing
 def walk_dataset_directory(src_dir, dst_dir):
-    # Collect all files
+    # Collect all image files
     image_files = []
     cbam_image_files = []
     for root, dirs, files in os.walk(src_dir):
@@ -187,43 +199,38 @@ def walk_dataset_directory(src_dir, dst_dir):
             if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff')):
                 cbam_image_files.append(file)
 
-    # Initialize progress bar
+    # Filter out already processed images
     image_files_filtered = [tup for tup in image_files if tup[1] not in cbam_image_files]
 
+    # Process images with progress bar
     with tqdm(total=len(image_files_filtered), desc="Processing Images", unit="image") as pbar:
-        # Loop through image files
         for root, file in image_files_filtered:
             src_file_path = os.path.join(root, file)
             try:
-                # Open the image using Pillow
+                # Open and process image
                 with Image.open(src_file_path) as img:
                     image = img.convert('RGB')
                     cbam_picture = apply_enhanced_cbam_to_image(image)
 
-                    # Generate new file name with suffix
+                    # Generate new filename and save path
                     filename, ext = os.path.splitext(file)
                     new_filename = f"{filename}{ext}"
 
-                    # Generate the target directory structure
+                    # Generate target directory structure
                     relative_path = os.path.relpath(root, src_dir)
                     dst_dir_with_structure = os.path.join(dst_dir, relative_path)
-
-                    # Ensure the target directory exists
                     os.makedirs(dst_dir_with_structure, exist_ok=True)
 
-                    # Define the new file path
+                    # Save the processed image
                     dst_file_path = os.path.join(dst_dir_with_structure, new_filename)
-
-                    # Save the resized image to the new location
                     cbam_picture.save(dst_file_path)
-            except:
-                print(f" ERROR: {file}")
-                pass
+            except Exception as e:
+                print(f" ERROR processing {file}: {e}")
 
-            # Update progress bar
             pbar.update(1)
 
 
+# Main execution: process images from source to destination directory
 src_directory = "datasets/LFWPeople/lfw_funneled"
 dst_directory = "datasets/lfw_cbam"
 walk_dataset_directory(src_directory, dst_directory)
