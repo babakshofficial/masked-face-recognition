@@ -6,7 +6,6 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.optimizers import Adam
 import matplotlib.pyplot as plt
 from backbones import CBAM_module as CBAM
-# from tensorflow.keras.optimizers.legacy import Adam
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import numpy as np
 import configparser
@@ -16,7 +15,7 @@ import os
 import random
 import h5py
 
-# GPU Identifier
+# GPU availability check and configuration
 device_name = tf.test.gpu_device_name()
 print("Nvidia GPU", "available!" if tf.config.list_physical_devices("GPU") else "not available :(  ")
 if "GPU" not in device_name:
@@ -24,19 +23,23 @@ if "GPU" not in device_name:
 else:
     print('Found GPU at: {}'.format(device_name))
 
-# Configuration
+# Read configuration from config file
 config = configparser.ConfigParser()
 config.read('config.ini')
+
+# Configuration parameters
 IMG_SIZE = (int(config['GENERAL']['WIDTH']), int(config['GENERAL']['HEIGHT']))
 BATCH_SIZE = int(config['GENERAL']['BATCH_SIZE'])
 EPOCHS = int(config['GENERAL']['EPOCHS'])
 LR = float(config['GENERAL']['LR'])
 
+# Dataset configuration
 dataset = config['DIRs']['DATASET']
 lfw_dir = config['DIRs']['LFW_DIR']
 pairs_file = config['DIRs']['PAIRS_FILE']
 h5_path = config['DIRs']['H5_PATH']
 
+# Select dataset directory based on configuration
 if dataset == 'lfw':
     lfw_dir = 'datasets/LFWPeople/lfw_funneled'
 elif dataset == 'cbam_lfw':
@@ -44,18 +47,20 @@ elif dataset == 'cbam_lfw':
 elif dataset == 'mflw':
     lfw_dir = 'datasets/mflw/lfw_funneled'
 
-
+# CBAM (Convolutional Block Attention Module) implementation
 def cbam_block(input_feature):
+    # Apply channel and spatial attention
     channel_refined_feature = CBAM.channel_attention(input_feature)
     spatial_refined_feature = CBAM.spatial_attention(channel_refined_feature)
     return spatial_refined_feature
 
-
+# ResNet50 identity block with CBAM integration
 def identity_block_with_cbam(input_tensor, kernel_size, filters, stage, block):
     filters1, filters2, filters3 = filters
     conv_name_base = f'res{stage}{block}_branch'
     bn_name_base = f'bn{stage}{block}_branch'
 
+    # Convolutional layers with batch normalization and ReLU activation
     x = Conv2D(filters1, (1, 1), name=conv_name_base + '2a')(input_tensor)
     x = BatchNormalization(name=bn_name_base + '2a')(x)
     x = Activation('relu')(x)
@@ -67,8 +72,10 @@ def identity_block_with_cbam(input_tensor, kernel_size, filters, stage, block):
     x = Conv2D(filters3, (1, 1), name=conv_name_base + '2c')(x)
     x = BatchNormalization(name=bn_name_base + '2c')(x)
 
+    # Apply CBAM attention mechanism
     x = cbam_block(x)
 
+    # Residual connection
     x = add([x, input_tensor])
     x = Activation('relu')(x)
     return x
